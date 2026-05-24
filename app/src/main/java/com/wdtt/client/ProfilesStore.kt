@@ -1,0 +1,129 @@
+package com.wdtt.client
+
+import android.content.Context
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
+import java.util.UUID
+
+data class ConnectionProfile(
+    val id: String,
+    val name: String,
+    val peer: String,
+    val vkHashes: String,
+    val workersPerHash: Int,
+    val listenPort: Int,
+    val password: String
+)
+
+class ProfilesStore(context: Context) {
+    private val appContext = context.applicationContext
+    private val settings = SettingsStore(appContext)
+
+    companion object {
+        private const val IDS_KEY = "profiles_ids"
+        private fun idsKey() = stringPreferencesKey(IDS_KEY)
+
+        private fun nameKey(id: String) = stringPreferencesKey("profile_name_$id")
+        private fun peerKey(id: String) = stringPreferencesKey("profile_peer_$id")
+        private fun hashesKey(id: String) = stringPreferencesKey("profile_hashes_$id")
+        private fun workersKey(id: String) = intPreferencesKey("profile_workers_$id")
+        private fun portKey(id: String) = intPreferencesKey("profile_port_$id")
+        private fun passKey(id: String) = stringPreferencesKey("profile_pass_enc_$id")
+    }
+
+    private val dataStore = appContext.dataStore
+    private val secureStore = SecureStringStore(appContext)
+
+    val profiles: Flow<List<ConnectionProfile>> = dataStore.data
+        .catch { emit(emptyPreferences()) }
+        .map { prefs ->
+            val idsRaw = prefs[idsKey()] ?: ""
+            if (idsRaw.isBlank()) return@map emptyList()
+            val ids = idsRaw.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+            val list = mutableListOf<ConnectionProfile>()
+            for (id in ids) {
+                val name = prefs[nameKey(id)] ?: ""
+                val peer = prefs[peerKey(id)] ?: ""
+                val hashes = prefs[hashesKey(id)] ?: ""
+                val workers = prefs[workersKey(id)] ?: 16
+                val port = prefs[portKey(id)] ?: 9000
+                val enc = prefs[passKey(id)] ?: ""
+                val pass = secureStore.decrypt(enc) ?: ""
+                list.add(ConnectionProfile(id, name, peer, hashes, workers, port, pass))
+            }
+            list
+        }
+
+    suspend fun saveProfile(profile: ConnectionProfile) = withContext(Dispatchers.IO) {
+        dataStore.edit { prefs ->
+            val idsRaw = prefs[idsKey()] ?: ""
+            val ids = idsRaw.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
+            if (!ids.contains(profile.id)) ids.add(profile.id)
+            prefs[idsKey()] = ids.joinToString(",")
+
+            prefs[nameKey(profile.id)] = profile.name
+            prefs[peerKey(profile.id)] = profile.peer
+            prefs[hashesKey(profile.id)] = profile.vkHashes
+            prefs[workersKey(profile.id)] = profile.workersPerHash
+            prefs[portKey(profile.id)] = profile.listenPort
+            prefs[passKey(profile.id)] = secureStore.encrypt(profile.password)
+        }
+    }
+
+    suspend fun deleteProfile(id: String) = withContext(Dispatchers.IO) {
+        dataStore.edit { prefs ->
+            val idsRaw = prefs[idsKey()] ?: ""
+            val ids = idsRaw.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
+            ids.remove(id)
+            prefs[idsKey()] = ids.joinToString(",")
+            prefs.remove(nameKey(id))
+            prefs.remove(peerKey(id))
+            prefs.remove(hashesKey(id))
+            prefs.remove(workersKey(id))
+            prefs.remove(portKey(id))
+            prefs.remove(passKey(id))
+        }
+    }
+
+    suspend fun createProfile(name: String, peer: String, vkHashes: String, workers: Int, listenPort: Int, password: String): ConnectionProfile {
+        val id = UUID.randomUUID().toString()
+        val p = ConnectionProfile(id, name, peer, vkHashes, workers, listenPort, password)
+        saveProfile(p)
+        return p
+    }
+
+    suspend fun getProfileOnce(id: String): ConnectionProfile? {
+        val prefs = dataStore.data.first()
+        val name = prefs[nameKey(id)] ?: return null
+        val peer = prefs[peerKey(id)] ?: ""
+        val hashes = prefs[hashesKey(id)] ?: ""
+        val workers = prefs[workersKey(id)] ?: 16
+        val port = prefs[portKey(id)] ?: 9000
+        val enc = prefs[passKey(id)] ?: ""
+        val pass = secureStore.decrypt(enc) ?: ""
+        return ConnectionProfile(id, name, peer, hashes, workers, port, pass)
+    }
+
+    // Apply profile: save to SettingsStore and optionally start tunnel
+    suspend fun applyProfile(context: Context, id: String, startImmediately: Boolean = false) {
+        val p = getProfileOnce(id) ?: return
+        // save to settings
+        settings.save(p.peer, p.vkHashes, "", p.workersPerHash, "udp", p.listenPort)
+        settings.saveConnectionPassword(p.password)
+        if (startImmediately) {
+            val captchaMode = settings.captchaMode.first()
+            val captchaSolve = settings.captchaSolveMethod.first()
+            val params = TunnelParams(p.peer, p.vkHashes, "", p.workersPerHash, p.listenPort, "", p.password, "udp", captchaMode, captchaSolve)
+            TunnelManager.start(context, params)
+        }
+    }
+}
