@@ -1,4 +1,5 @@
 import java.util.Properties
+import org.gradle.api.tasks.Exec
 
 plugins {
     id("com.android.application")
@@ -10,11 +11,11 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.wdtt.client"
+        applicationId = "net.qwdtt.client"
         minSdk = 29
         targetSdk = 35
-        versionCode = 118
-        versionName = "1.1.8"
+        versionCode = 1
+        versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -125,6 +126,17 @@ android {
     }
 }
 
+tasks.register<Exec>("buildNativeLibs") {
+    group = "build"
+    description = "Build Go client binaries for Android ABIs and copy them into app/src/main/jniLibs"
+    workingDir = rootDir
+    commandLine("bash", rootDir.resolve("scripts/build-native-libs.sh").absolutePath)
+}
+
+tasks.named("preBuild").configure {
+    dependsOn("buildNativeLibs")
+}
+
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
@@ -140,4 +152,5 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation("com.wireguard.android:tunnel:1.0.20230706")
     implementation("com.github.mwiede:jsch:0.2.16")
+    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
 }

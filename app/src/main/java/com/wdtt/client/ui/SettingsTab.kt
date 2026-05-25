@@ -9,6 +9,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -23,6 +24,8 @@ import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tag
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -37,6 +40,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -56,12 +64,30 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import kotlin.math.roundToInt
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.net.Uri
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.material3.Switch
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.ui.draw.scale
+import com.wdtt.client.isNewerVersion
 
 private const val WORKERS_PER_GROUP = 9
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsTab() {
+fun SettingsTab(
+    themeMode: String,
+    onThemeChange: (String) -> Unit,
+    isDynamicColor: Boolean,
+    onDynamicColorChange: (Boolean) -> Unit,
+    currentPalette: String,
+    onPaletteChange: (String) -> Unit,
+    onNavigateToLogs: () -> Unit = {}
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val settingsStore = remember { SettingsStore(context) }
@@ -70,13 +96,35 @@ fun SettingsTab() {
     CompositionLocalProvider(
         LocalDensity provides Density(currentDensity.density, fontScale = 1f)
     ) {
-        SettingsTabContent(context, scope, settingsStore)
+        SettingsTabContent(
+            context = context,
+            scope = scope,
+            settingsStore = settingsStore,
+            themeMode = themeMode,
+            onThemeChange = onThemeChange,
+            isDynamicColor = isDynamicColor,
+            onDynamicColorChange = onDynamicColorChange,
+            currentPalette = currentPalette,
+            onPaletteChange = onPaletteChange,
+            onNavigateToLogs = onNavigateToLogs
+        )
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsTabContent(context: android.content.Context, scope: kotlinx.coroutines.CoroutineScope, settingsStore: SettingsStore) {
+fun SettingsTabContent(
+    context: android.content.Context,
+    scope: kotlinx.coroutines.CoroutineScope,
+    settingsStore: SettingsStore,
+    themeMode: String,
+    onThemeChange: (String) -> Unit,
+    isDynamicColor: Boolean,
+    onDynamicColorChange: (Boolean) -> Unit,
+    currentPalette: String,
+    onPaletteChange: (String) -> Unit,
+    onNavigateToLogs: () -> Unit = {}
+) {
     val savedConnectionPassword by settingsStore.connectionPassword.collectAsStateWithLifecycle(initialValue = "")
     val savedManualPortsEnabled by settingsStore.manualPortsEnabled.collectAsStateWithLifecycle(initialValue = false)
     val savedServerDtlsPort by settingsStore.serverDtlsPort.collectAsStateWithLifecycle(initialValue = 56000)
@@ -84,6 +132,13 @@ fun SettingsTabContent(context: android.content.Context, scope: kotlinx.coroutin
     val savedListenPort by settingsStore.listenPort.collectAsStateWithLifecycle(initialValue = 9000)
 
     val tunnelRunning by TunnelManager.running.collectAsStateWithLifecycle()
+    val autoSwitchToLogs by settingsStore.autoSwitchToLogs.collectAsStateWithLifecycle(initialValue = true)
+
+    val currentProfileId by settingsStore.currentProfileId.collectAsStateWithLifecycle(initialValue = "")
+    val currentProfileName by settingsStore.currentProfileName.collectAsStateWithLifecycle(initialValue = "")
+
+    val profilesStore = remember { com.wdtt.client.ProfilesStore(context) }
+    val profiles by profilesStore.profiles.collectAsStateWithLifecycle(initialValue = emptyList())
 
     val cooldownSeconds by TunnelManager.cooldownSeconds.collectAsStateWithLifecycle()
     var wasRunning by remember { mutableStateOf(false) }
@@ -109,6 +164,7 @@ fun SettingsTabContent(context: android.content.Context, scope: kotlinx.coroutin
     var manualPortsEnabled by rememberSaveable { mutableStateOf(false) }
     var serverDtlsPortInput by rememberSaveable { mutableStateOf("56000") }
     var serverWgPortInput by rememberSaveable { mutableStateOf("56001") }
+    var showAppSettingsDialog by rememberSaveable { mutableStateOf(false) }
 
     val allHashes = remember(vkHash1, vkHash2, vkHash3, vkHash4) { listOf(vkHash1, vkHash2, vkHash3, vkHash4) }
     val uniqueHashes = remember(vkHash1, vkHash2, vkHash3, vkHash4) { allHashes.filter { it.isNotBlank() && it.length >= 16 }.distinct() }
@@ -236,6 +292,61 @@ fun SettingsTabContent(context: android.content.Context, scope: kotlinx.coroutin
 
     val scrollState = rememberScrollState()
 
+    val speedHistory = remember { mutableStateListOf<Float>() }
+    var currentSpeedKbps by remember { mutableFloatStateOf(0f) }
+    var lastTraffic by remember { mutableDoubleStateOf(-1.0) }
+    var lastTime by remember { mutableLongStateOf(0L) }
+
+    LaunchedEffect(tunnelRunning) {
+        if (tunnelRunning) {
+            speedHistory.clear()
+            repeat(30) { speedHistory.add(0f) }
+            lastTraffic = -1.0
+            lastTime = System.currentTimeMillis()
+            currentSpeedKbps = 0f
+            
+            while (true) {
+                delay(1000)
+                val now = System.currentTimeMillis()
+                val statsText = TunnelManager.stats.value
+                val currentTraffic = parseTrafficMb(statsText)
+                
+                if (currentTraffic != null) {
+                    if (lastTraffic >= 0.0) {
+                        val deltaTrafficMb = currentTraffic - lastTraffic
+                        if (deltaTrafficMb > 0.0) {
+                            val deltaTimeSec = (now - lastTime) / 1000.0
+                            if (deltaTimeSec > 0) {
+                                val rawSpeed = ((deltaTrafficMb * 1024.0) / deltaTimeSec).toFloat()
+                                currentSpeedKbps = rawSpeed
+                                lastTraffic = currentTraffic
+                                lastTime = now
+                            }
+                        } else {
+                            if (now - lastTime > 3800) {
+                                currentSpeedKbps = 0f
+                            }
+                        }
+                    } else {
+                        lastTraffic = currentTraffic
+                        lastTime = now
+                    }
+                }
+                
+                var speedPoint = currentSpeedKbps
+                if (speedPoint > 2f) {
+                    val oscillation = (Math.random() * 0.12 - 0.06).toFloat()
+                    speedPoint = (speedPoint + speedPoint * oscillation).coerceAtLeast(0f)
+                }
+                if (speedHistory.size >= 30) speedHistory.removeAt(0)
+                speedHistory.add(speedPoint)
+            }
+        } else {
+            currentSpeedKbps = 0f
+            speedHistory.clear()
+        }
+    }
+
     val isPeerValid = peerInput.isNotBlank() && !peerInput.contains(":")
     val isHashesValid = combinedHashes.isNotBlank()
     val isValid = isPeerValid && isHashesValid && savedConnectionPassword.isNotBlank() && !hasInputHashErrors
@@ -335,6 +446,329 @@ fun SettingsTabContent(context: android.content.Context, scope: kotlinx.coroutin
         )
     }
 
+    if (showAppSettingsDialog) {
+        AlertDialog(
+            onDismissRequest = { showAppSettingsDialog = false },
+            title = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Настройки", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold))
+                    IconButton(onClick = { showAppSettingsDialog = false }) {
+                        Icon(Icons.Default.Close, contentDescription = "Закрыть")
+                    }
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // ═══ Раздел: Оформление ═══
+                    Text(
+                        "Оформление",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+
+                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        // Тема оформления
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                "Тема оформления",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                ProtocolChip(
+                                    label = "Сист.",
+                                    selected = themeMode == "system",
+                                    enabled = true,
+                                    isError = false,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    onThemeChange("system")
+                                }
+                                ProtocolChip(
+                                    label = "Свет",
+                                    selected = themeMode == "light",
+                                    enabled = true,
+                                    isError = false,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    onThemeChange("light")
+                                }
+                                ProtocolChip(
+                                    label = "Темн",
+                                    selected = themeMode == "dark",
+                                    enabled = true,
+                                    isError = false,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    onThemeChange("dark")
+                                }
+                            }
+                        }
+
+                        val supportsDynamicColor = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                        if (supportsDynamicColor) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        "Динамические цвета",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        "Material You",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Switch(
+                                    checked = isDynamicColor,
+                                    onCheckedChange = { onDynamicColorChange(it) },
+                                    modifier = Modifier.scale(0.8f)
+                                )
+                            }
+                        }
+
+                        // Выбор палитры, если динамические цвета выключены
+                        if (!isDynamicColor || !supportsDynamicColor) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    "Цветовая палитра",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    PaletteCircleOption("indigo", 0xFF5B588D, currentPalette, onPaletteChange)
+                                    PaletteCircleOption("forest", 0xFF5F5D68, currentPalette, onPaletteChange)
+                                    PaletteCircleOption("espresso", 0xFF6D4C41, currentPalette, onPaletteChange)
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                    // ═══ Раздел: Поведение ═══
+                    Text(
+                        "Поведение",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Логи при подключении",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                "Переключаться на вкладку «Логи» при запуске туннеля",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = autoSwitchToLogs,
+                            onCheckedChange = { enabled ->
+                                scope.launch { settingsStore.saveAutoSwitchToLogs(enabled) }
+                            }
+                        )
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                    // ═══ Раздел: О приложении ═══
+                    Text(
+                        "О приложении",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+
+                    val currentVersion = remember { "v${com.wdtt.client.BuildConfig.VERSION_NAME.removePrefix("v")}" }
+                    var isCheckingUpdates by remember { mutableStateOf(false) }
+                    val updateLatestVersion by settingsStore.updateLatestVersion.collectAsStateWithLifecycle(initialValue = "")
+                    val updateLastError by settingsStore.updateLastError.collectAsStateWithLifecycle(initialValue = "")
+
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column {
+                                Text(
+                                    text = "qWDTT",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "Версия $currentVersion",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            
+                            OutlinedButton(
+                                onClick = {
+                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/SpaceNeuroX/proxy-turn-vk-android"))
+                                    context.startActivity(intent)
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text("GitHub", style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+
+                        Text(
+                            text = "Форк оригинального проекта amurcanov/proxy-turn-vk-android от разработчика SpaceNeuroX.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+                        // Проверка обновлений
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            val updateStatusText = remember(isCheckingUpdates, updateLatestVersion, updateLastError) {
+                                when {
+                                    isCheckingUpdates -> "Проверяем..."
+                                    updateLatestVersion.isNotBlank() && isNewerVersion(currentVersion, updateLatestVersion) -> "Доступна $updateLatestVersion!"
+                                    updateLatestVersion.isNotBlank() -> "Обновлений нет"
+                                    updateLastError.isNotBlank() -> "Ошибка"
+                                    else -> "Не проверено"
+                                }
+                            }
+                            
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "Обновления",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = updateStatusText,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (updateLatestVersion.isNotBlank() && isNewerVersion(currentVersion, updateLatestVersion)) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+                                )
+                            }
+
+                            Button(
+                                onClick = {
+                                    scope.launch {
+                                        isCheckingUpdates = true
+                                        try {
+                                            val release = com.wdtt.client.fetchLatestReleaseInfo(currentVersion)
+                                            if (release != null) {
+                                                settingsStore.saveUpdateState(
+                                                    lastCheckAt = System.currentTimeMillis(),
+                                                    latestVersion = release.versionTag,
+                                                    error = ""
+                                                )
+                                                if (isNewerVersion(currentVersion, release.versionTag)) {
+                                                    Toast.makeText(context, "Доступна новая версия: ${release.versionTag}", Toast.LENGTH_LONG).show()
+                                                } else {
+                                                    Toast.makeText(context, "У вас последняя версия!", Toast.LENGTH_SHORT).show()
+                                                }
+                                            } else {
+                                                settingsStore.saveUpdateState(
+                                                    lastCheckAt = System.currentTimeMillis(),
+                                                    latestVersion = "",
+                                                    error = "Ошибка"
+                                                )
+                                                Toast.makeText(context, "Не удалось проверить обновления", Toast.LENGTH_SHORT).show()
+                                            }
+                                        } catch (e: java.lang.Exception) {
+                                            Toast.makeText(context, "Ошибка: ${e.message}", Toast.LENGTH_SHORT).show()
+                                        } finally {
+                                            isCheckingUpdates = false
+                                        }
+                                    }
+                                },
+                                enabled = !isCheckingUpdates,
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text("Проверить", style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+                        // Копия отчета
+                        OutlinedButton(
+                            onClick = {
+                                val reportText = """
+                                    Приложение: qWDTT
+                                    Версия: $currentVersion
+                                    Android API: ${Build.VERSION.SDK_INT}
+                                    Архитектура (ABI): ${Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"}
+                                    Устройство: ${Build.MANUFACTURER} ${Build.MODEL}
+                                """.trimIndent()
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                clipboard.setPrimaryClip(ClipData.newPlainText("qWDTT Report", reportText))
+                                Toast.makeText(context, "Отчёт о системе скопирован!", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text("Скопировать системный отчёт")
+                        }
+
+                        Spacer(Modifier.height(12.dp))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showAppSettingsDialog = false }) {
+                    Text("Готово")
+                }
+            },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+            modifier = Modifier.padding(16.dp).fillMaxWidth()
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -342,6 +776,43 @@ fun SettingsTabContent(context: android.content.Context, scope: kotlinx.coroutin
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // ═══ Топ-тулбар с заголовком и иконкой настроек ═══
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "qWDTT",
+                style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.ExtraBold),
+                color = MaterialTheme.colorScheme.primary
+            )
+            
+            // Иконка настроек (шестеренка)
+            IconButton(
+                onClick = { showAppSettingsDialog = true }
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Settings,
+                    contentDescription = "Настройки оформления и инфо",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+        // ═══ График скорости при активном туннеле ═══
+        androidx.compose.animation.AnimatedVisibility(
+            visible = tunnelRunning,
+            enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.expandVertically(),
+            exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.shrinkVertically()
+        ) {
+            SpeedGraphCard(speedHistory = speedHistory, currentSpeed = currentSpeedKbps)
+        }
+
         // ═══ Заголовок раздела ═══
         Text(
             "Настройки туннеля",
@@ -354,6 +825,84 @@ fun SettingsTabContent(context: android.content.Context, scope: kotlinx.coroutin
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // Быстрый выбор профиля
+            if (profiles.isNotEmpty()) {
+                var expanded by remember { mutableStateOf(false) }
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = { expanded = true },
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.15f),
+                            contentColor = MaterialTheme.colorScheme.primary
+                        ),
+                        border = BorderStroke(
+                            1.dp,
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = if (currentProfileName.isNotEmpty()) "Профиль: $currentProfileName" else "Быстрый выбор профиля",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                    
+                    DropdownMenu(
+                        expanded = expanded,
+                        onDismissRequest = { expanded = false },
+                        modifier = Modifier
+                            .fillMaxWidth(0.85f)
+                            .border(
+                                width = 1.dp,
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
+                                shape = RoundedCornerShape(20.dp)
+                            )
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(MaterialTheme.colorScheme.surface)
+                    ) {
+                        profiles.forEach { p ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        p.name,
+                                        fontWeight = if (p.id == currentProfileId) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (p.id == currentProfileId) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                    )
+                                },
+                                onClick = {
+                                    expanded = false
+                                    scope.launch {
+                                        profilesStore.applyProfile(context, p.id, startImmediately = false)
+                                        // Update state inputs in UI immediately
+                                        peerInput = p.peer
+                                        parseHashes(p.vkHashes)
+                                        workersInput = p.workersPerHash.toFloat()
+                                        portInput = p.listenPort.toString()
+                                        Toast.makeText(context, "Профиль «${p.name}» применен!", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.PlayArrow,
+                                        contentDescription = null,
+                                        tint = if (p.id == currentProfileId) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            )
+                        }
+                    }
+                }
+                
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+            }
             OutlinedTextField(
                 value = peerInput,
                 onValueChange = {
@@ -615,6 +1164,9 @@ fun SettingsTabContent(context: android.content.Context, scope: kotlinx.coroutin
                         )
                     } else {
                         requestVpnAndStart()
+                        if (autoSwitchToLogs) {
+                            onNavigateToLogs()
+                        }
                     }
                 },
                 enabled = (isValid && cooldownSeconds == 0) || tunnelRunning,
@@ -647,17 +1199,33 @@ fun SettingsTabContent(context: android.content.Context, scope: kotlinx.coroutin
 
 // ═══ Reusable mode chip ═══
 @Composable
-private fun ProtocolChip(label: String, selected: Boolean, enabled: Boolean = true, isError: Boolean = false, onClick: () -> Unit) {
+private fun ProtocolChip(
+    label: String,
+    selected: Boolean,
+    enabled: Boolean = true,
+    isError: Boolean = false,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
     FilterChip(
         selected = selected,
         onClick = onClick,
         enabled = enabled,
+        modifier = modifier,
         label = {
-            Text(
-                label,
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                color = if (isError) MaterialTheme.colorScheme.error else (if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface)
-            )
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                    color = if (isError) MaterialTheme.colorScheme.error else (if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface),
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                )
+            }
         },
         shape = RoundedCornerShape(16.dp),
         colors = FilterChipDefaults.filterChipColors(
@@ -1096,4 +1664,177 @@ private fun androidx.compose.ui.graphics.Color.luminance(): Float {
     val g = green
     val b = blue
     return 0.2126f * r + 0.7152f * g + 0.0722f * b
+}
+
+@Composable
+private fun SpeedGraphCard(speedHistory: List<Float>, currentSpeed: Float) {
+    val colors = MaterialTheme.colorScheme
+    val isDark = colors.background.luminance() < 0.22f
+    val cardBg = if (isDark) colors.surface.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.5f)
+    val cardBorder = colors.outlineVariant.copy(alpha = if (isDark) 0.35f else 0.2f)
+
+    Surface(
+        shape = RoundedCornerShape(24.dp),
+        color = cardBg,
+        border = BorderStroke(1.dp, cardBorder),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "Скорость туннеля",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                    Text(
+                        text = formatSpeed(currentSpeed),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Black,
+                        color = colors.primary
+                    )
+                }
+                
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = colors.primaryContainer.copy(alpha = 0.5f),
+                    modifier = Modifier.padding(horizontal = 4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(androidx.compose.foundation.shape.CircleShape)
+                                .background(colors.primary)
+                        )
+                        Text(
+                            text = "LIVE",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = colors.primary
+                        )
+                    }
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(84.dp)
+            ) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val width = size.width
+                    val height = size.height
+                    
+                    if (speedHistory.size > 1) {
+                        val maxVal = speedHistory.maxOrNull()?.coerceAtLeast(10f) ?: 10f
+                        val stepX = width / (speedHistory.size - 1)
+                        
+                        val path = Path()
+                        path.moveTo(0f, height - (speedHistory[0] / maxVal) * height)
+                        
+                        for (i in 1 until speedHistory.size) {
+                            val x = i * stepX
+                            val y = height - (speedHistory[i] / maxVal) * height
+                            val prevX = (i - 1) * stepX
+                            val prevY = height - (speedHistory[i - 1] / maxVal) * height
+                            
+                            val cx1 = prevX + stepX / 2f
+                            val cy1 = prevY
+                            val cx2 = prevX + stepX / 2f
+                            val cy2 = y
+                            
+                            path.cubicTo(cx1, cy1, cx2, cy2, x, y)
+                        }
+                        
+                        val fillPath = Path().apply {
+                            addPath(path)
+                            lineTo(width, height)
+                            lineTo(0f, height)
+                            close()
+                        }
+                        
+                        drawPath(
+                            path = fillPath,
+                            brush = Brush.verticalGradient(
+                                colors = listOf(
+                                    colors.primary.copy(alpha = 0.24f),
+                                    Color.Transparent
+                                )
+                            )
+                        )
+                        
+                        drawPath(
+                            path = path,
+                            color = colors.primary,
+                            style = Stroke(
+                                width = 2.5.dp.toPx(),
+                                cap = StrokeCap.Round
+                            )
+                        )
+                        
+                        val lastY = height - (speedHistory.last() / maxVal) * height
+                        drawCircle(
+                            color = colors.primary,
+                            radius = 4.5.dp.toPx(),
+                            center = Offset(width, lastY)
+                        )
+                        drawCircle(
+                            color = colors.primary.copy(alpha = 0.35f),
+                            radius = 9.dp.toPx(),
+                            center = Offset(width, lastY)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun formatSpeed(kbps: Float): String {
+    return when {
+        kbps >= 1024f -> String.format("%.2f МБ/с", kbps / 1024f)
+        else -> String.format("%.1f КБ/с", kbps)
+    }
+}
+
+private fun parseTrafficMb(stats: String): Double? {
+    val match = Regex("Трафик:\\s*([\\d.,]+)").find(stats)
+    return match?.groupValues?.getOrNull(1)?.replace(",", ".")?.toDoubleOrNull()
+}
+
+@Composable
+private fun PaletteCircleOption(
+    paletteId: String,
+    colorHex: Long,
+    selectedId: String,
+    onClick: (String) -> Unit
+) {
+    val isSelected = paletteId == selectedId
+    val baseModifier = Modifier
+        .size(36.dp)
+        .clip(androidx.compose.foundation.shape.CircleShape)
+        .background(Color(colorHex))
+        .clickable { onClick(paletteId) }
+
+    val finalModifier = if (isSelected) {
+        baseModifier.border(3.dp, MaterialTheme.colorScheme.primary, androidx.compose.foundation.shape.CircleShape)
+    } else {
+        baseModifier
+    }
+
+    androidx.compose.foundation.layout.Box(
+        modifier = finalModifier
+    )
 }

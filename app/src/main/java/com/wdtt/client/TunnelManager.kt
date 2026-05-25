@@ -1,5 +1,6 @@
 package com.wdtt.client
 
+import android.annotation.SuppressLint
 import android.content.Context
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -46,12 +47,16 @@ object TunnelManager {
     private var lastActiveAtMs = 0L
     private var activeHashIndex = 0 // 0: primary, 1: secondary
     private var currentParams: TunnelParams? = null
-    private var lastContext: Context? = null
+    private var lastContext: java.lang.ref.WeakReference<Context>? = null
     private var forceRegenerateUA = false // принудительная перегенерация UA при ошибках
     private var currentCaptchaMode = "wv" // режим обхода капчи: "wv" или "rjs"
     private var currentCaptchaSolveMethod = "auto" // "manual" или "auto"
     private var restartAttempts = 0
     private val maxRestartBackoffSec = 30
+
+    private var activeProfileId = ""
+    private var lastSavedTrafficMb = 0.0
+    private var lastSessionTrafficMb = 0.0
 
     val running = MutableStateFlow(false)
     val logs = MutableStateFlow<List<LogEntry>>(emptyList())
@@ -125,16 +130,26 @@ object TunnelManager {
             lastActiveAtMs = 0L
             activeHashIndex = 0
             currentParams = params
-            lastContext = appContext
+            lastContext = java.lang.ref.WeakReference(appContext)
             forceRegenerateUA = false
             currentCaptchaMode = params.captchaMode
             currentCaptchaSolveMethod = params.captchaSolveMethod
+            activeProfileId = ""
+            lastSavedTrafficMb = 0.0
+            lastSessionTrafficMb = 0.0
         }
         
         wgHelper = WireGuardHelper(appContext)
 
         scope.launch {
             try {
+                if (!isSwitching) {
+                    try {
+                        activeProfileId = SettingsStore(appContext).currentProfileId.first()
+                    } catch (_: Exception) {
+                        activeProfileId = ""
+                    }
+                }
                 val targetHash = if (activeHashIndex == 0) params.vkHashes else params.secondaryVkHash
                 
                 // Robust hash parsing: split by comma, newline, or whitespace
@@ -214,6 +229,7 @@ object TunnelManager {
         }
     }
 
+    @SuppressLint("StaticFieldLeak")
     private fun startLogReader() {
         readerJob = scope.launch {
             val reader = process?.inputStream?.bufferedReader() ?: return@launch
@@ -376,6 +392,27 @@ object TunnelManager {
                             }
                         }
 
+                        // Парсинг и инкрементальное сохранение трафика для активного профиля
+                        val matchTraffic = Regex("Трафик:\\s*([\\d.,]+)").find(msg)
+                        val currentTraffic = matchTraffic?.groupValues?.getOrNull(1)?.replace(",", ".")?.toDoubleOrNull()
+                        if (currentTraffic != null) {
+                            lastSessionTrafficMb = currentTraffic
+                            val profId = activeProfileId
+                            if (profId.isNotEmpty()) {
+                                val diff = currentTraffic - lastSavedTrafficMb
+                                if (diff >= 1.0) { // Каждые 1 МБ трафика
+                                    val toSave = diff
+                                    scope.launch {
+                                        try {
+                                            val ctx = lastContext?.get() ?: return@launch
+                                            ProfilesStore(ctx).incrementProfileTraffic(profId, toSave)
+                                        } catch (_: Exception) {}
+                                    }
+                                    lastSavedTrafficMb = currentTraffic
+                                }
+                            }
+                        }
+
                         updateLog("stats", "[СТАТИСТИКА] $msg", 3, false)
                         return@forEachLine
                     }
@@ -529,7 +566,7 @@ object TunnelManager {
 
     private fun handleHashError() {
         val params = currentParams ?: return
-        val context = lastContext ?: return
+        val context = lastContext?.get() ?: return
 
         currentHashErrorCount = 0
         forceRegenerateUA = true // Перегенерируем UA при следующих ошибках
@@ -607,7 +644,7 @@ object TunnelManager {
 
     fun restartTransport() {
         val params = currentParams ?: return
-        val context = lastContext ?: return
+        val context = lastContext?.get() ?: return
         updateLog("network_restart", "[СЕТЬ] Перезапуск транспорта из-за смены сети...", 50, false)
         killProcess() // Только убиваем процесс, running не трогаем!
         scope.launch {
@@ -623,9 +660,10 @@ object TunnelManager {
     }
 
     fun resume() {
-        if (currentParams != null && lastContext != null) {
+        val resumeCtx = lastContext?.get()
+        if (currentParams != null && resumeCtx != null) {
             scope.launch {
-                start(lastContext!!, currentParams!!, isSwitching = true)
+                start(resumeCtx, currentParams!!, isSwitching = true)
             }
         }
     }
@@ -647,7 +685,27 @@ object TunnelManager {
         }
     }
 
+    private fun saveRemainingTraffic() {
+        val id = activeProfileId
+        val total = lastSessionTrafficMb
+        val saved = lastSavedTrafficMb
+        val diff = total - saved
+        val context = lastContext?.get()
+        if (id.isNotEmpty() && diff > 0.0 && context != null) {
+            val appContext = context.applicationContext
+            scope.launch {
+                try {
+                    ProfilesStore(appContext).incrementProfileTraffic(id, diff)
+                } catch (_: Exception) {}
+            }
+        }
+        activeProfileId = ""
+        lastSavedTrafficMb = 0.0
+        lastSessionTrafficMb = 0.0
+    }
+
     private fun stopOnlyProcess() {
+        saveRemainingTraffic()
         killProcess()
         running.value = false
     }
@@ -657,6 +715,7 @@ object TunnelManager {
     }
 
     fun stop() {
+        saveRemainingTraffic()
         scope.launch(Dispatchers.Main) {
             wgHelper?.stopTunnel()
         }
@@ -669,6 +728,7 @@ object TunnelManager {
 
     // Suspend-версия: гарантирует что процесс мёртв и порт свободен
     suspend fun stopAndWait() {
+        saveRemainingTraffic()
         // Сначала останавливаем WireGuard и ждём завершения
         withContext(Dispatchers.Main) {
             wgHelper?.stopTunnel()
@@ -709,7 +769,7 @@ object TunnelManager {
      * Результат ВСЕГДА отправляется обратно в Go через writeCaptchaResult.
      */
     private suspend fun handleCaptchaSolve(requestMode: String, redirectUri: String, sessionToken: String) {
-        val ctx = lastContext ?: run {
+        val ctx = lastContext?.get() ?: run {
             writeCaptchaResult("error:context is null")
             return
         }

@@ -94,12 +94,11 @@ import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.sin
 
-private const val ReleasesUrl = "https://github.com/amurcanov/proxy-turn-vk-android/releases"
-private const val IssuesUrl = "https://github.com/amurcanov/proxy-turn-vk-android/issues/new"
-private const val DeveloperProfileUrl = "https://github.com/amurcanov"
-private const val RepositoryUrl = "https://github.com/amurcanov/proxy-turn-vk-android"
+private const val ReleasesUrl = "https://github.com/SpaceNeuroX/proxy-turn-vk-android/releases"
+private const val IssuesUrl = "https://github.com/SpaceNeuroX/proxy-turn-vk-android/issues/new"
+private const val DeveloperProfileUrl = "https://github.com/SpaceNeuroX"
+private const val RepositoryUrl = "https://github.com/SpaceNeuroX/proxy-turn-vk-android"
 private const val DonateUrl = ""
-private val DonateActionButtonColor = Color(0xFF00AEA5)
 
 private val browserPackages = listOf(
     "com.android.chrome",
@@ -164,7 +163,6 @@ fun InfoTab() {
     var isCheckingUpdates by remember { mutableStateOf(false) }
     var pendingManualRelease by remember { mutableStateOf<com.wdtt.client.AppReleaseInfo?>(null) }
     var showHelpDialog by remember { mutableStateOf(false) }
-    var showDonateDialog by remember { mutableStateOf(false) }
     var actionsExpanded by rememberSaveable { mutableStateOf(true) }
     var projectExpanded by rememberSaveable { mutableStateOf(true) }
     val updateLatestVersion by settingsStore.updateLatestVersion.collectAsStateWithLifecycle(initialValue = "")
@@ -201,7 +199,7 @@ fun InfoTab() {
             )
         }
 
-        InfoHeroCard(currentVersion = currentVersion, onSupportClick = { showDonateDialog = true })
+        InfoHeroCard(currentVersion = currentVersion)
 
         ExpandableSectionCard(
             title = "Действия",
@@ -242,7 +240,7 @@ fun InfoTab() {
                     modifier = Modifier.weight(1f),
                     onClick = {
                         val clipboard = context.getSystemService(ClipboardManager::class.java)
-                        clipboard?.setPrimaryClip(ClipData.newPlainText("WDTT Report", buildSupportReport()))
+                        clipboard?.setPrimaryClip(ClipData.newPlainText("qWDTT Report", buildSupportReport()))
                         Toast.makeText(context, "Отчёт сформирован и скопирован", Toast.LENGTH_SHORT).show()
                     },
                     icon = {
@@ -355,7 +353,7 @@ fun InfoTab() {
 
         ExpandableSectionCard(
             title = "О проекте",
-            itemCount = "3 ссылки",
+            itemCount = "4 ссылки",
             expanded = projectExpanded,
             onToggle = { projectExpanded = !projectExpanded },
             icon = {
@@ -368,8 +366,8 @@ fun InfoTab() {
             }
         ) {
             ProjectLinkRow(
-                title = "Автор Android-версии",
-                subtitle = "GitHub профиль amurcanov",
+                title = "Автор форка",
+                subtitle = "GitHub профиль SpaceNeuroX",
                 onClick = { openUrlInBrowser(context, DeveloperProfileUrl) },
                 icon = {
                     Icon(
@@ -382,9 +380,23 @@ fun InfoTab() {
             )
 
             ProjectLinkRow(
-                title = "Репозиторий WDTT",
+                title = "Репозиторий qWDTT",
                 subtitle = "Исходники и релизы приложения",
                 onClick = { openUrlInBrowser(context, RepositoryUrl) },
+                icon = {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_github),
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            )
+
+            ProjectLinkRow(
+                title = "Оригинальный проект",
+                subtitle = "Форк репозитория amurcanov",
+                onClick = { openUrlInBrowser(context, "https://github.com/amurcanov/proxy-turn-vk-android") },
                 icon = {
                     Icon(
                         painter = painterResource(id = R.drawable.ic_github),
@@ -414,11 +426,10 @@ fun InfoTab() {
     }
 
     if (showHelpDialog) ImportantInfoDialog(onDismiss = { showHelpDialog = false })
-    if (showDonateDialog) DonateDialog(onDismiss = { showDonateDialog = false })
 }
 
 @Composable
-private fun InfoHeroCard(currentVersion: String, onSupportClick: () -> Unit) {
+private fun InfoHeroCard(currentVersion: String) {
     val colors = MaterialTheme.colorScheme
     val isDark = colors.background.luminance() < 0.22f
     val heroBrush = remember(colors.primaryContainer, colors.secondaryContainer, colors.surfaceVariant) {
@@ -474,7 +485,7 @@ private fun InfoHeroCard(currentVersion: String, onSupportClick: () -> Unit) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     HeroMetaPill(
-                        text = "WDTT",
+                        text = "qWDTT",
                         containerColor = glassColor,
                         borderColor = glassBorder,
                         modifier = Modifier.weight(1f)
@@ -489,7 +500,7 @@ private fun InfoHeroCard(currentVersion: String, onSupportClick: () -> Unit) {
 
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = "WDTT VPN Tunnel",
+                        text = "qWDTT VPN Tunnel",
                         style = MaterialTheme.typography.headlineSmall.copy(
                             fontWeight = FontWeight.Black,
                             fontSize = 30.sp,
@@ -503,22 +514,6 @@ private fun InfoHeroCard(currentVersion: String, onSupportClick: () -> Unit) {
                         color = colors.onSurfaceVariant,
                         lineHeight = 21.sp
                     )
-                }
-
-                Button(
-                    onClick = onSupportClick,
-                    shape = RoundedCornerShape(22.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = DonateActionButtonColor,
-                        contentColor = Color.White
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(54.dp)
-                ) {
-                    Icon(Icons.Default.Favorite, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Поддержать проект", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                 }
             }
         }
@@ -785,76 +780,7 @@ private fun ProjectLinkRow(
     }
 }
 
-@Composable
-private fun DonateDialog(onDismiss: () -> Unit) {
-    val context = LocalContext.current
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Surface(
-            shape = RoundedCornerShape(32.dp),
-            color = MaterialTheme.colorScheme.surface,
-            contentColor = MaterialTheme.colorScheme.onSurface,
-            tonalElevation = 10.dp,
-            shadowElevation = 14.dp,
-            modifier = Modifier.fillMaxWidth(0.92f)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp, vertical = 22.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Text(
-                        text = "Поддержка проекта",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Black,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.weight(1f)
-                    )
-                    FilledTonalIconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, contentDescription = "Закрыть")
-                    }
-                }
 
-                Text(
-                    text = "Если приложение реально помогает, можно поддержать Android-версию проекта.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                    lineHeight = 20.sp
-                )
-
-                Button(
-                    onClick = { openUrlInBrowser(context, DonateUrl) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(62.dp),
-                    shape = RoundedCornerShape(22.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = WDTTColors.donate,
-                        contentColor = Color.White
-                    )
-                ) {
-                    Icon(
-                        painter = painterResource(id = R.drawable.ic_yoomoney),
-                        contentDescription = "ЮMoney",
-                        tint = Color.Unspecified,
-                        modifier = Modifier
-                            .width(126.dp)
-                            .height(28.dp)
-                    )
-                }
-            }
-        }
-    }
-}
 
 private fun buildSupportReport(): String {
     val androidVersion = Build.VERSION.RELEASE ?: "?"

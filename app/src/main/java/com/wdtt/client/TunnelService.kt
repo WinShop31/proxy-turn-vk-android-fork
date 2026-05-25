@@ -160,6 +160,8 @@ class TunnelService : Service() {
         releaseWakeLock()
         releaseWifiLock()
         stopForeground(STOP_FOREGROUND_REMOVE)
+        TunnelWidgetProvider.updateWidgetState(applicationContext, false, "Нажмите для подключения")
+        QuickToggleTileService.requestTileUpdate(applicationContext)
         stopSelf()
     }
 
@@ -364,6 +366,8 @@ class TunnelService : Service() {
         lastNotificationText = text
         val notification = createNotification(text)
         getSystemService(NotificationManager::class.java).notify(TUNNEL_NOTIFICATION_ID, notification)
+        TunnelWidgetProvider.updateWidgetState(applicationContext, TunnelManager.running.value, text)
+        QuickToggleTileService.requestTileUpdate(applicationContext)
     }
 
     override fun onDestroy() {

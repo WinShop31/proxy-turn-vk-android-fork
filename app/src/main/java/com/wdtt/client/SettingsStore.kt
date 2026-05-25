@@ -72,6 +72,9 @@ class SettingsStore(context: Context) {
         private val IS_DYNAMIC_COLOR = booleanPreferencesKey("is_dynamic_color")
         private val THEME_PALETTE = stringPreferencesKey("theme_palette")
 
+        val CURRENT_PROFILE_ID = stringPreferencesKey("current_profile_id")
+        val CURRENT_PROFILE_NAME = stringPreferencesKey("current_profile_name")
+
         private val UPDATE_LAST_CHECK_AT = longPreferencesKey("update_last_check_at")
         private val UPDATE_LATEST_VERSION = stringPreferencesKey("update_latest_version")
         private val UPDATE_LAST_ERROR = stringPreferencesKey("update_last_error")
@@ -83,6 +86,9 @@ class SettingsStore(context: Context) {
         private val UPDATE_DIALOG_LAST_ACTION_VERSION = stringPreferencesKey("update_dialog_last_action_version")
         private val UPDATE_DIALOG_LAST_ACTION = stringPreferencesKey("update_dialog_last_action")
         private val UPDATE_DIALOG_LAST_ACTION_AT = longPreferencesKey("update_dialog_last_action_at")
+
+        // ═══ Поведение ═══
+        private val AUTO_SWITCH_TO_LOGS = booleanPreferencesKey("auto_switch_to_logs")
     }
 
     private val dataStore = appContext.dataStore
@@ -149,6 +155,9 @@ class SettingsStore(context: Context) {
     val isDynamicColor: Flow<Boolean> = dataStore.data.map { it[IS_DYNAMIC_COLOR] ?: false }
     val themePalette: Flow<String> = dataStore.data.map { it[THEME_PALETTE] ?: "indigo" }
 
+    val currentProfileId: Flow<String> = dataStore.data.map { it[CURRENT_PROFILE_ID] ?: "" }
+    val currentProfileName: Flow<String> = dataStore.data.map { it[CURRENT_PROFILE_NAME] ?: "" }
+
     val updateLastCheckAt: Flow<Long> = dataStore.data.map { it[UPDATE_LAST_CHECK_AT] ?: 0L }
     val updateLatestVersion: Flow<String> = dataStore.data.map { it[UPDATE_LATEST_VERSION] ?: "" }
     val updateLastError: Flow<String> = dataStore.data.map { it[UPDATE_LAST_ERROR] ?: "" }
@@ -160,6 +169,13 @@ class SettingsStore(context: Context) {
     val updateDialogLastActionVersion: Flow<String> = dataStore.data.map { it[UPDATE_DIALOG_LAST_ACTION_VERSION] ?: "" }
     val updateDialogLastAction: Flow<String> = dataStore.data.map { it[UPDATE_DIALOG_LAST_ACTION] ?: "" }
     val updateDialogLastActionAt: Flow<Long> = dataStore.data.map { it[UPDATE_DIALOG_LAST_ACTION_AT] ?: 0L }
+
+    // ═══ Поведение ═══
+    val autoSwitchToLogs: Flow<Boolean> = dataStore.data.map { it[AUTO_SWITCH_TO_LOGS] ?: true }
+
+    suspend fun saveAutoSwitchToLogs(enabled: Boolean) {
+        dataStore.edit { prefs -> prefs[AUTO_SWITCH_TO_LOGS] = enabled }
+    }
 
     suspend fun saveThemeMode(mode: String) {
         dataStore.edit { prefs ->
@@ -176,6 +192,13 @@ class SettingsStore(context: Context) {
     suspend fun saveThemePalette(palette: String) {
         dataStore.edit { prefs ->
             prefs[THEME_PALETTE] = palette
+        }
+    }
+
+    suspend fun saveCurrentProfile(id: String, name: String) {
+        dataStore.edit { prefs ->
+            prefs[CURRENT_PROFILE_ID] = id
+            prefs[CURRENT_PROFILE_NAME] = name
         }
     }
 
@@ -234,6 +257,8 @@ class SettingsStore(context: Context) {
             prefs[LISTEN_PORT] = listenPort
             prefs[SNI] = sni
             prefs[NO_DNS] = noDns
+            prefs[CURRENT_PROFILE_ID] = ""
+            prefs[CURRENT_PROFILE_NAME] = ""
         }
     }
 

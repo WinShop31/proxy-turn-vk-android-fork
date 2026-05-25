@@ -36,11 +36,15 @@ import kotlinx.coroutines.launch
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.FilterList
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.VpnKey
@@ -60,11 +64,13 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.platform.LocalContext
 import com.wdtt.client.ui.AppUpdateDialog
+import com.wdtt.client.ui.ProfilesTab
 import com.wdtt.client.ui.FloatingToolbar
 import com.wdtt.client.ui.LogsTab
 import com.wdtt.client.ui.SettingsTab
@@ -99,6 +105,24 @@ class MainActivity : ComponentActivity() {
         var isForeground: Boolean
             get() = activeActivities > 0
             set(value) {}
+
+        // URI файла .qwdtt/.netrkn, ожидающего импорта
+        val pendingFileUri = mutableStateOf<android.net.Uri?>(null)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingIntent(intent)
+    }
+
+    private fun handleIncomingIntent(intent: Intent?) {
+        if (intent?.action == Intent.ACTION_VIEW) {
+            val uri = intent.data
+            if (uri != null) {
+                pendingFileUri.value = uri
+            }
+        }
     }
 
     override fun onStart() {
@@ -117,6 +141,8 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
 
         checkAndRequestNotifications()
+
+        handleIncomingIntent(intent)
 
         setContent {
             val settingsStore = remember { SettingsStore(this) }
@@ -198,9 +224,9 @@ private data class NavItem(
 private val navItems = listOf(
     NavItem("Туннель", Icons.Filled.VpnKey, Icons.Outlined.VpnKey),
     NavItem("Деплой", Icons.Filled.Cloud, Icons.Outlined.Cloud),
-    NavItem("Исключ.", Icons.Filled.FilterList, Icons.Outlined.FilterList),
+    NavItem("Профили", Icons.Filled.FolderOpen, Icons.Outlined.Folder),
+    NavItem("Обход", Icons.Filled.FilterList, Icons.Outlined.FilterList),
     NavItem("Логи", Icons.Filled.Terminal, Icons.Outlined.Terminal),
-    NavItem("Инфо", Icons.Filled.Info, Icons.Outlined.Info),
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -232,7 +258,7 @@ fun MainScreen(
     val navOverlayReserve = safeBottomInset + 96.dp
 
     LaunchedEffect(selectedTab) {
-        if (selectedTab == 3) TunnelManager.clearUnreadErrors()
+        if (selectedTab == 4) TunnelManager.clearUnreadErrors()
     }
 
     LaunchedEffect(updateCheckIntervalHours) {
@@ -312,7 +338,7 @@ fun MainScreen(
                             onDragEnd = {
                                 if (dragTargetIndex in navItems.indices && dragProgress >= 0.5f) {
                                     selectedTab = dragTargetIndex
-                                    if (selectedTab == 3) TunnelManager.clearUnreadErrors()
+                                    if (selectedTab == 4) TunnelManager.clearUnreadErrors()
                                 }
                                 dragTargetIndex = -1
                                 dragProgress = 0f
@@ -338,22 +364,31 @@ fun MainScreen(
                         }
                     }
             ) {
-                AnimatedContent(
+                androidx.compose.animation.Crossfade(
                     targetState = selectedTab,
-                    transitionSpec = {
-                        fadeIn(tween(300)) togetherWith fadeOut(tween(225))
-                    },
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(bottom = navOverlayReserve),
                     label = "tab_content"
                 ) { tab ->
                     when (tab) {
-                        0 -> SettingsTab()
+                        0 -> SettingsTab(
+                            themeMode = themeMode,
+                            onThemeChange = onThemeChange,
+                            isDynamicColor = isDynamicColor,
+                            onDynamicColorChange = onDynamicColorChange,
+                            currentPalette = currentPalette,
+                            onPaletteChange = onPaletteChange,
+                            onNavigateToLogs = { selectedTab = 4 }
+                        )
                         1 -> DeployTab()
-                        2 -> ExceptionsTab()
-                        3 -> LogsTab()
-                        4 -> InfoTab()
+                        2 -> ProfilesTab(
+                            onProfileApplied = { selectedTab = 0 },
+                            importFileUri = MainActivity.pendingFileUri.value,
+                            onImportHandled = { MainActivity.pendingFileUri.value = null }
+                        )
+                        3 -> ExceptionsTab()
+                        4 -> LogsTab()
                     }
                 }
 
@@ -368,7 +403,7 @@ fun MainScreen(
                         if (selectedTab != index) {
                             view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                             selectedTab = index
-                            if (index == 3) TunnelManager.clearUnreadErrors()
+                            if (index == 4) TunnelManager.clearUnreadErrors()
                         }
                         dragTargetIndex = -1
                         dragProgress = 0f
@@ -378,15 +413,6 @@ fun MainScreen(
             }
         }
 
-        // Floating theme toolbar overlay
-        FloatingToolbar(
-            currentTheme = themeMode,
-            onThemeChange = onThemeChange,
-            isDynamicColor = isDynamicColor,
-            onDynamicColorChange = onDynamicColorChange,
-            currentPalette = currentPalette,
-            onPaletteChange = onPaletteChange
-        )
     }
 
     pendingRelease?.let { release ->
@@ -479,7 +505,7 @@ private fun ProxyNavigationBar(
         modifier = modifier
             .fillMaxWidth()
             .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
-            .padding(horizontal = 22.dp, vertical = 12.dp)
+            .padding(horizontal = 10.dp, vertical = 8.dp)
     ) {
         val trackPadding = 8.dp
         val itemWidth = (maxWidth - trackPadding * 2) / navItems.size
@@ -502,7 +528,7 @@ private fun ProxyNavigationBar(
                     shape = RoundedCornerShape(22.dp),
                     color = indicatorColor,
                     modifier = Modifier
-                        .offset(x = indicatorOffset)
+                        .offset { androidx.compose.ui.unit.IntOffset(x = indicatorOffset.roundToPx(), y = 0) }
                         .padding(vertical = 6.dp)
                         .width(itemWidth)
                         .fillMaxHeight()
@@ -533,7 +559,7 @@ private fun ProxyNavigationBar(
                                     modifier = Modifier.size(22.dp),
                                     tint = iconColor
                                 )
-                                if (index == 3 && unreadErrors > 0) {
+                                if (index == 4 && unreadErrors > 0) {
                                     Badge(
                                         containerColor = if (tunnelRunning) colors.primary else WDTTColors.warning,
                                         contentColor = colors.onPrimary,
@@ -546,9 +572,12 @@ private fun ProxyNavigationBar(
                             Spacer(Modifier.height(4.dp))
                             Text(
                                 text = item.label,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = if (emphasis > 0.55f) FontWeight.SemiBold else FontWeight.Medium,
-                                color = iconColor,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontSize = 9.5.sp,
+                                    letterSpacing = 0.1.sp
+                                ),
+                                fontWeight = if (emphasis > 0.55f) FontWeight.SemiBold else FontWeight.Normal,
+                                color = iconColor.copy(alpha = if (emphasis > 0.4f) 1f else 0.5f),
                                 maxLines = 1
                             )
                         }
@@ -639,10 +668,10 @@ private fun AppBackdrop(modifier: Modifier = Modifier) {
                 .align(Alignment.TopStart)
                 .offset(x = (-86).dp, y = (-126).dp)
                 .size(258.dp)
-                .clip(Android16OrbLarge)
+                .clip(androidx.compose.foundation.shape.CircleShape)
                 .background(topOrbGlow)
                 .then(
-                    if (isDark) Modifier else Modifier.border(1.dp, lightOrbOutline, Android16OrbLarge)
+                    if (isDark) Modifier else Modifier.border(1.dp, lightOrbOutline, androidx.compose.foundation.shape.CircleShape)
                 )
         )
         Box(
@@ -650,10 +679,10 @@ private fun AppBackdrop(modifier: Modifier = Modifier) {
                 .align(Alignment.CenterStart)
                 .offset(x = (-44).dp, y = 28.dp)
                 .size(146.dp)
-                .clip(Android16OrbSmall)
+                .clip(androidx.compose.foundation.shape.CircleShape)
                 .background(leftGlow)
                 .then(
-                    if (isDark) Modifier else Modifier.border(1.dp, lightOrbOutline.copy(alpha = 0.22f), Android16OrbSmall)
+                    if (isDark) Modifier else Modifier.border(1.dp, lightOrbOutline.copy(alpha = 0.22f), androidx.compose.foundation.shape.CircleShape)
                 )
         )
         Box(
@@ -661,10 +690,10 @@ private fun AppBackdrop(modifier: Modifier = Modifier) {
                 .align(Alignment.BottomEnd)
                 .offset(x = 62.dp, y = (-208).dp)
                 .size(198.dp)
-                .clip(Android16OrbMedium)
+                .clip(androidx.compose.foundation.shape.CircleShape)
                 .background(bottomGlow)
                 .then(
-                    if (isDark) Modifier else Modifier.border(1.dp, lightOrbOutline.copy(alpha = 0.20f), Android16OrbMedium)
+                    if (isDark) Modifier else Modifier.border(1.dp, lightOrbOutline.copy(alpha = 0.20f), androidx.compose.foundation.shape.CircleShape)
                 )
         )
     }

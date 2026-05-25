@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
@@ -21,7 +22,8 @@ data class ConnectionProfile(
     val vkHashes: String,
     val workersPerHash: Int,
     val listenPort: Int,
-    val password: String
+    val password: String,
+    val trafficMb: Double = 0.0
 )
 
 class ProfilesStore(context: Context) {
@@ -29,6 +31,7 @@ class ProfilesStore(context: Context) {
     private val settings = SettingsStore(appContext)
 
     companion object {
+        private val Context.dataStore by preferencesDataStore("profiles")
         private const val IDS_KEY = "profiles_ids"
         private fun idsKey() = stringPreferencesKey(IDS_KEY)
 
@@ -38,6 +41,7 @@ class ProfilesStore(context: Context) {
         private fun workersKey(id: String) = intPreferencesKey("profile_workers_$id")
         private fun portKey(id: String) = intPreferencesKey("profile_port_$id")
         private fun passKey(id: String) = stringPreferencesKey("profile_pass_enc_$id")
+        private fun trafficKey(id: String) = androidx.datastore.preferences.core.doublePreferencesKey("profile_traffic_$id")
     }
 
     private val dataStore = appContext.dataStore
@@ -58,7 +62,8 @@ class ProfilesStore(context: Context) {
                 val port = prefs[portKey(id)] ?: 9000
                 val enc = prefs[passKey(id)] ?: ""
                 val pass = secureStore.decrypt(enc) ?: ""
-                list.add(ConnectionProfile(id, name, peer, hashes, workers, port, pass))
+                val traffic = prefs[trafficKey(id)] ?: 0.0
+                list.add(ConnectionProfile(id, name, peer, hashes, workers, port, pass, traffic))
             }
             list
         }
@@ -76,6 +81,7 @@ class ProfilesStore(context: Context) {
             prefs[workersKey(profile.id)] = profile.workersPerHash
             prefs[portKey(profile.id)] = profile.listenPort
             prefs[passKey(profile.id)] = secureStore.encrypt(profile.password)
+            prefs[trafficKey(profile.id)] = profile.trafficMb
         }
     }
 
@@ -91,6 +97,7 @@ class ProfilesStore(context: Context) {
             prefs.remove(workersKey(id))
             prefs.remove(portKey(id))
             prefs.remove(passKey(id))
+            prefs.remove(trafficKey(id))
         }
     }
 
@@ -110,7 +117,23 @@ class ProfilesStore(context: Context) {
         val port = prefs[portKey(id)] ?: 9000
         val enc = prefs[passKey(id)] ?: ""
         val pass = secureStore.decrypt(enc) ?: ""
-        return ConnectionProfile(id, name, peer, hashes, workers, port, pass)
+        val traffic = prefs[trafficKey(id)] ?: 0.0
+        return ConnectionProfile(id, name, peer, hashes, workers, port, pass, traffic)
+    }
+
+    suspend fun incrementProfileTraffic(id: String, additionalTrafficMb: Double) = withContext(Dispatchers.IO) {
+        if (id.isBlank() || additionalTrafficMb <= 0.0) return@withContext
+        dataStore.edit { prefs ->
+            val key = trafficKey(id)
+            val current = prefs[key] ?: 0.0
+            prefs[key] = current + additionalTrafficMb
+        }
+    }
+
+    suspend fun resetProfileTraffic(id: String) = withContext(Dispatchers.IO) {
+        dataStore.edit { prefs ->
+            prefs[trafficKey(id)] = 0.0
+        }
     }
 
     // Apply profile: save to SettingsStore and optionally start tunnel
@@ -119,6 +142,7 @@ class ProfilesStore(context: Context) {
         // save to settings
         settings.save(p.peer, p.vkHashes, "", p.workersPerHash, "udp", p.listenPort)
         settings.saveConnectionPassword(p.password)
+        settings.saveCurrentProfile(p.id, p.name)
         if (startImmediately) {
             val captchaMode = settings.captchaMode.first()
             val captchaSolve = settings.captchaSolveMethod.first()
