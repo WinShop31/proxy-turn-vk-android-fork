@@ -1501,6 +1501,32 @@ fun ProfilesTab(
                             
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 androidx.compose.material3.FilledIconButton(
+                                    onClick = { pingProfile(profile) },
+                                    modifier = Modifier.size(28.dp),
+                                    colors = androidx.compose.material3.IconButtonDefaults.filledIconButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                        contentColor = MaterialTheme.colorScheme.primary
+                                    ),
+                                    enabled = pingingState[profile.id] != true
+                                ) {
+                                    if (pingingState[profile.id] == true) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(14.dp),
+                                            strokeWidth = 1.5.dp,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    } else {
+                                        androidx.compose.material3.Icon(
+                                            imageVector = Icons.Filled.SignalCellularAlt,
+                                            contentDescription = "Проверить пинг",
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+
+                                Spacer(Modifier.width(8.dp))
+
+                                androidx.compose.material3.FilledIconButton(
                                     onClick = { moveToGroupTarget = profile },
                                     modifier = Modifier.size(28.dp),
                                     colors = androidx.compose.material3.IconButtonDefaults.filledIconButtonColors(
