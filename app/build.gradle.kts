@@ -9,13 +9,13 @@ plugins {
 android {
     namespace = "com.wdtt.client"
     compileSdk = 35
-
+    
     defaultConfig {
         applicationId = "net.qwdtt.client"
         minSdk = 29
         targetSdk = 35
-        versionCode = 9
-        versionName = "1.0.8"
+        versionCode = 16
+        versionName = "1.1.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

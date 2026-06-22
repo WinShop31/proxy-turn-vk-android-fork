@@ -1298,7 +1298,93 @@ var (
 	totalConns           int64
 	natType              string = "Инициализация..."
 	serverStartTime      time.Time
+	lastWGStats          = make(map[string]struct{ rx, tx int64 })
 )
+
+func updateTrafficFromWG() {
+	if globalWgDev == nil {
+		return
+	}
+	ipcOut, err := globalWgDev.IpcGet()
+	if err != nil {
+		return
+	}
+
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	var currentPub string
+	var rx, tx int64
+
+	processPeer := func(pub string, currentRx, currentTx int64) {
+		if pub == "" {
+			return
+		}
+		last := lastWGStats[pub]
+		deltaRx := currentRx - last.rx
+		deltaTx := currentTx - last.tx
+		if deltaRx < 0 || deltaTx < 0 {
+			deltaRx = currentRx
+			deltaTx = currentTx
+		}
+		lastWGStats[pub] = struct{ rx, tx int64 }{currentRx, currentTx}
+
+		if deltaRx == 0 && deltaTx == 0 {
+			return
+		}
+
+		var targetDevID string
+		for devID, dev := range db.Devices {
+			h, _ := b64ToHex(dev.PubKey)
+			if h == pub {
+				targetDevID = devID
+				dev.UpBytes += deltaRx
+				dev.DownBytes += deltaTx
+				break
+			}
+		}
+
+		if targetDevID == "" {
+			return
+		}
+
+		foundEntry := false
+		for _, entry := range db.Passwords {
+			for _, id := range entry.DeviceIDs {
+				if id == targetDevID {
+					entry.UpBytes += deltaRx
+					entry.DownBytes += deltaTx
+					foundEntry = true
+					break
+				}
+			}
+			if entry.DeviceID == targetDevID {
+				entry.UpBytes += deltaRx
+				entry.DownBytes += deltaTx
+				foundEntry = true
+			}
+		}
+
+		if !foundEntry {
+			atomic.AddInt64(&mainPassUp, deltaRx)
+			atomic.AddInt64(&mainPassDown, deltaTx)
+		}
+	}
+
+	for _, line := range strings.Split(ipcOut, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "public_key=") {
+			processPeer(currentPub, rx, tx)
+			currentPub = strings.TrimPrefix(line, "public_key=")
+			rx, tx = 0, 0
+		} else if strings.HasPrefix(line, "rx_bytes=") {
+			fmt.Sscanf(line, "rx_bytes=%d", &rx)
+		} else if strings.HasPrefix(line, "tx_bytes=") {
+			fmt.Sscanf(line, "tx_bytes=%d", &tx)
+		}
+	}
+	processPeer(currentPub, rx, tx)
+}
 
 func statsLoop(ctx context.Context, configDir string) {
 	serverStartTime = time.Now()
@@ -1313,6 +1399,7 @@ func statsLoop(ctx context.Context, configDir string) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			updateTrafficFromWG()
 			fromC := atomic.LoadInt64(&totalBytesFromClient)
 			toC := atomic.LoadInt64(&totalBytesToClient)
 			active := atomic.LoadInt32(&activeConns)
@@ -1919,8 +2006,6 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
 	atomic.AddInt64(&totalConns, 1)
 
 	var connDeviceID string
-	var connPassword string
-	var connIsMainPass bool
 
 	dtlsConn, ok := clientConn.(*dtls.Conn)
 	if !ok {
@@ -1983,8 +2068,6 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
 			dbMutex.Unlock()
 		} else if valid {
 			connDeviceID = deviceID
-			connPassword = password
-			connIsMainPass = isMainPass
 
 			// Сохраняем БД, так как canConnectAndBind мог внести привязку нового устройства
 			if isGenPass {
@@ -2022,6 +2105,25 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
 			}
 			dbMutex.Unlock()
 		}
+
+		clientConn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+		n, err = clientConn.Read(buf)
+		if err != nil {
+			return
+		}
+		clientConn.SetReadDeadline(time.Time{})
+		firstPacket = buf[:n]
+		firstStr = string(firstPacket)
+	} else if strings.HasPrefix(firstStr, "AUTH:") {
+		parts := strings.Split(strings.TrimSpace(strings.TrimPrefix(firstStr, "AUTH:")), "|")
+		deviceID := "unknown"
+		if len(parts) > 0 {
+			deviceID = parts[0]
+		}
+
+		connDeviceID = deviceID
+
+		clientConn.Write([]byte("AUTH_OK"))
 
 		clientConn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 		n, err = clientConn.Read(buf)
@@ -2109,24 +2211,8 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
 				continue
 			}
 			atomic.AddInt64(&totalBytesFromClient, int64(nn))
-			// Per-password upload tracking
-			if connIsMainPass {
-				atomic.AddInt64(&mainPassUp, int64(nn))
-			} else if connPassword != "" {
-				dbMutex.Lock()
-				e, ok := db.Passwords[connPassword]
-				if !ok || e == nil || isPasswordExpired(e) {
-					dbMutex.Unlock()
-					return
-				}
-				e.UpBytes += int64(nn)
-				if connDeviceID != "" {
-					if dev, exists := db.Devices[connDeviceID]; exists && dev != nil {
-						dev.UpBytes += int64(nn)
-					}
-				}
-				dbMutex.Unlock()
-			}
+			// Учёт трафика теперь происходит через IpcGet()
+
 			if _, err := wgConn.Write((*b)[:nn]); err != nil {
 				return
 			}
@@ -2157,24 +2243,8 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
 				return
 			}
 			atomic.AddInt64(&totalBytesToClient, int64(nn))
-			// Per-password download tracking
-			if connIsMainPass {
-				atomic.AddInt64(&mainPassDown, int64(nn))
-			} else if connPassword != "" {
-				dbMutex.Lock()
-				e, ok := db.Passwords[connPassword]
-				if !ok || e == nil || isPasswordExpired(e) {
-					dbMutex.Unlock()
-					return
-				}
-				e.DownBytes += int64(nn)
-				if connDeviceID != "" {
-					if dev, exists := db.Devices[connDeviceID]; exists && dev != nil {
-						dev.DownBytes += int64(nn)
-					}
-				}
-				dbMutex.Unlock()
-			}
+			// Учёт трафика теперь происходит через IpcGet()
+
 			if _, err := clientConn.Write((*b)[:nn]); err != nil {
 				return
 			}
