@@ -2123,8 +2123,6 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
 
 		connDeviceID = deviceID
 
-		clientConn.Write([]byte("AUTH_OK"))
-
 		clientConn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 		n, err = clientConn.Read(buf)
 		if err != nil {

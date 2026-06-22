@@ -53,21 +53,6 @@ func SendAuth(conn net.Conn, deviceID, password string) error {
 		return fmt.Errorf("отправка AUTH: %w", err)
 	}
 
-	b := make([]byte, 512)
-	if err := conn.SetReadDeadline(time.Now().Add(15 * time.Second)); err != nil {
-		return fmt.Errorf("установка дедлайна AUTH: %w", err)
-	}
-	n, err := conn.Read(b)
-	_ = conn.SetReadDeadline(time.Time{})
-	if err != nil {
-		return fmt.Errorf("чтение ответа AUTH: %w", err)
-	}
-
-	resp := string(b[:n])
-	if !strings.HasPrefix(resp, "AUTH_OK") {
-		return fmt.Errorf("ошибка AUTH: %s", resp)
-	}
-
 	return nil
 }
 
