@@ -1305,6 +1305,9 @@ func statsLoop(ctx context.Context, configDir string) {
 	statsFile := filepath.Join(configDir, "server.log")
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
+
+	saveTicks := 0
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -1322,10 +1325,15 @@ func statsLoop(ctx context.Context, configDir string) {
 				float64(toC)/1024/1024,
 			)
 
-			// Пишем server.log
+			// Пишем server.log и периодически сохраняем БД на диск
 			dbMutex.Lock()
 			numPasswords := len(db.Passwords)
 			numDevices := len(db.Devices)
+			saveTicks++
+			if saveTicks >= 6 { // 6 * 10 секунд = 60 секунд
+				saveTicks = 0
+				saveDB()
+			}
 			dbMutex.Unlock()
 
 			uptimeStr := formatUptime(uptime)
